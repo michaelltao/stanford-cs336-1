@@ -52,15 +52,16 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 def merge_dict(data: dict[tuple[str, ...], int], num_merges: int):
-    # Count adjacent pairs
-    inverted_idx = defaultdict(list)
-
+    # pair -> []word mapping
+    inverted_idx = defaultdict(set)
+    
+    # pair -> count mapping
     seq_counter = defaultdict(int)
     for seq, count in data.items():
         for i in range(len(seq) - 1):
-            pair = (seq[i], seq[i + 1])   # keep as tuple key, not f-string
+            pair = (seq[i], seq[i + 1])
             seq_counter[pair] += count
-            inverted_idx[pair].append(seq)
+            inverted_idx[pair].add(seq)
 
     # Build max-heap: (negative_count, pair)
     heap = [(-cnt, pair) for pair, cnt in seq_counter.items()]
@@ -68,24 +69,47 @@ def merge_dict(data: dict[tuple[str, ...], int], num_merges: int):
 
     
     for iter in range(num_merges):
-        neg_cnt, top_pair = heapq.heappop(heap) 
-        seqs = inverted_idx[top_pair]
+        while heap:
+            neg_cnt, top_pair = heapq.heappop(heap)
+            if seq_counter[top_pair] == -neg_cnt:
+                break
+        else: break
 
-        merged_seqs = []
-        for seq in seqs:
+        affected_seqs = list(inverted_idx[top_pair])
+
+        for old_seq in affected_seqs:
+            print(old_seq)
+            count = data.pop(old_seq)
+            for i in range(len(old_seq) - 1):
+                p = (old_seq[i], old_seq[i+1])
+                print('p', p)
+                seq_counter[p] -= count
+                print(inverted_idx[p])
+                inverted_idx[p].remove(old_seq)
+
             x = 0
             new_seq = []
-            while x < len(seq):
-                if x < len(seq) - 1 and seq[x:x+2] == top_pair:
-                    new_seq.append("".join(seq[x:x+2]))
+
+            newidk = defaultdict(int)
+            while x < len(old_seq):
+                if x < len(old_seq) - 1 and old_seq[x:x+2] == top_pair:
+                    joined = ("".join(old_seq[x:x+2]))
+                    new_seq.append(joined)
+
                     x += 2
                 else:
-                    new_seq.append(seq[x])
+                    new_seq.append(old_seq[x])
                     x += 1
-            merged_seqs.append(tuple(new_seq))
+            
+            new_seq = tuple(new_seq)
+            data[new_seq] = count
+            for i in range(len(new_seq) - 1):
+                p = (new_seq[i], new_seq[i+1])
+                seq_counter[p] -= count 
+                inverted_idx[p].add(new_seq) 
+
+                heapq.heappush(heap, (-seq_counter[p], p))
         
-        inverted_idx[top_pair] = merged_seqs
-        print(inverted_idx[top_pair])
     return
 
 
