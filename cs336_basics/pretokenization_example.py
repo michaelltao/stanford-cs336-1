@@ -1,5 +1,8 @@
 import os
+import regex as re
+import heapq
 from typing import BinaryIO
+from collections import Counter, defaultdict
 
 
 def find_chunk_boundaries(
@@ -48,9 +51,48 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
+def merge_dict(data: dict[tuple[str, ...], int], num_merges: int):
+    # Count adjacent pairs
+    inverted_idx = defaultdict(list)
+
+    seq_counter = defaultdict(int)
+    for seq, count in data.items():
+        for i in range(len(seq) - 1):
+            pair = (seq[i], seq[i + 1])   # keep as tuple key, not f-string
+            seq_counter[pair] += count
+            inverted_idx[pair].append(seq)
+
+    # Build max-heap: (negative_count, pair)
+    heap = [(-cnt, pair) for pair, cnt in seq_counter.items()]
+    heapq.heapify(heap)
+
+    
+    for iter in range(num_merges):
+        neg_cnt, top_pair = heapq.heappop(heap) 
+        seqs = inverted_idx[top_pair]
+
+        merged_seqs = []
+        for seq in seqs:
+            x = 0
+            new_seq = []
+            while x < len(seq):
+                if x < len(seq) - 1 and seq[x:x+2] == top_pair:
+                    new_seq.append("".join(seq[x:x+2]))
+                    x += 2
+                else:
+                    new_seq.append(seq[x])
+                    x += 1
+            merged_seqs.append(tuple(new_seq))
+        
+        inverted_idx[top_pair] = merged_seqs
+        print(inverted_idx[top_pair])
+    return
+
+
+PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
 ## Usage
-with open(..., "rb") as f:
+with open("data/TinyStoriesV2-GPT4-valid.txt", "rb") as f:
     num_processes = 4
     boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
@@ -60,3 +102,8 @@ with open(..., "rb") as f:
         f.seek(start)
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
         # Run pre-tokenization on your chunk and store the counts for each pre-token
+        pretokenized_text = re.findall(PAT, chunk)
+        text = [tuple(list(word)) for word in pretokenized_text]
+        counted = Counter(text)
+        merge_dict(counted, 1)
+        break

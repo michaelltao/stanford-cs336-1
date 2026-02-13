@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 input_text = '''low low low low low
 lower lower widest widest widest
 newest newest newest newest newest newest
@@ -55,3 +57,4 @@ for iteration in range(NUM_MERGES):
     print(new_seqs)
 
 print(merges)
+
