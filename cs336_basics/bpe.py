@@ -1,60 +1,125 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 
-input_text = '''low low low low low
-lower lower widest widest widest
-newest newest newest newest newest newest
-'''
+import regex as re
+import heapq
 
-# split text by whitespace
-pretokenized_text = input_text.split()
+from cs336_basics.pretokenization_example import find_chunk_boundaries
 
-# count values
-values = {}
-for tok in pretokenized_text:
-    seq = tuple(list(tok))
-    values[seq] = values.get(seq, 0) + 1
+def train_bpe(
+    input_path: str,
+    vocab_size: int,
+    special_tokens: list[str]
+) -> (dict[int, bytes], list[tuple[bytes, bytes]]):
 
-# merge values
-merges = set()
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    special_tokens_bytes = [tok.encode("utf-8") for tok in special_tokens]
+    split_tokens = special_tokens_bytes or [b"<|endoftext|>"]
+    boundary_token = split_tokens[0]
 
-NUM_MERGES = 12
+    with open(input_path, "rb") as f:
+        num_processes = 4
 
-for iteration in range(NUM_MERGES):
-    max_seq = (("", ""), 0)
-    seq_counts = {}
-    for seq, count in values.items():
+        boundaries = find_chunk_boundaries(f, num_processes, boundary_token)
+
+        # The following is a serial implementation, but you can parallelize this
+        # by sending each start/end pair to a set of processes.
+
+        final_toks = Counter()
+        split_pat = b"|".join(re.escape(tok) for tok in sorted(split_tokens, key=len, reverse=True))
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk = f.read(end - start)
+            split_texts = re.split(split_pat, chunk)
+
+            # Run pre-tokenization on your chunk and store the counts for each pre-token
+            for split_bytes in split_texts:
+                text = split_bytes.decode("utf-8", errors="ignore")
+                pretokenized_text = re.findall(PAT, text)
+                toks = [tuple(list(word)) for word in pretokenized_text]
+                final_toks |= Counter(toks)
+
+        final_vocab, merges = merge_dict(
+            final_toks,
+            vocab_size=vocab_size,
+            special_tokens=special_tokens_bytes,
+        )
+
+    return final_vocab, merges
+
+
+def merge_dict(
+    data: dict[tuple[str, ...], int], 
+    vocab_size: int,
+    special_tokens: list[bytes]
+) -> (dict[int, bytes], list[tuple[bytes, bytes]]):
+    vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+    next_id = 256
+    for tok in special_tokens:
+        vocab[next_id] = tok
+        next_id += 1
+
+    merges: list[tuple[bytes, bytes]] = []
+
+    inverted_idx = defaultdict(set)
+    
+    # pair -> count mapping
+    seq_counter = defaultdict(int)
+    for seq, count in data.items():
         for i in range(len(seq) - 1):
-            s = (seq[i], seq[i+1])
-            seq_counts[s] = seq_counts.get(s, 0) + count
-            if seq_counts[s] == max_seq[1]:
-                new_seq = max([max_seq[0], s])
-                max_seq = (new_seq, max_seq[1])
-            elif seq_counts[s] > max_seq[1]:
-                max_seq = (s, seq_counts[s])
+            pair = (seq[i], seq[i + 1])
+            seq_counter[pair] += count
+            inverted_idx[pair].add(seq)
 
-    new_seqs = {}
-    for seq, count in values.items():
-        new_key = []
-        i = 0
-        while i < len(seq) - 1:
-            s = (seq[i], seq[i+1])
-            if s == max_seq[0]:
-                new_char = f"{seq[i]}{seq[i+1]}"
-                new_key.append(new_char)
-                merges.add(" ".join([seq[i], seq[i+1]]))
-                i += 2  # Jump the next character because it's now part of this merge
-            else:
-                # If no match, you might want to add the single char to new_key
-                new_key.append(seq[i]) 
-                if i+1 == len(seq) - 1:
-                    new_key.append(seq[i+1])
-                i += 1
-        new_seqs[tuple(new_key)] = count
+    # Build max-heap: (negative_count, pair)
+    heap = [(-cnt, pair) for pair, cnt in seq_counter.items()]
+    heapq.heapify(heap)
 
-    values = new_seqs
+    
+    while True:
+        while heap:
+            neg_cnt, top_pair = heapq.heappop(heap)
+            if seq_counter[top_pair] == -neg_cnt:
+                break
+        else: break
 
-    print(f"iteration... {iteration}")
-    print(new_seqs)
+        top_pair_bytes = (top_pair[0].encode("utf-8"), top_pair[1].encode("utf-8"))
+        merged_token = top_pair_bytes[0] + top_pair_bytes[1]
+        merges.append(top_pair_bytes)
+        vocab[next_id] = merged_token
+        next_id += 1
 
-print(merges)
+        if len(vocab) >= vocab_size:
+            return vocab, merges
 
+        affected_seqs = list(inverted_idx[top_pair])
+
+        for old_seq in affected_seqs:
+            count = data.pop(old_seq)
+            for i in range(len(old_seq) - 1):
+                p = (old_seq[i], old_seq[i+1])
+                seq_counter[p] -= count
+                inverted_idx[p].discard(old_seq)
+
+            x = 0
+            new_seq = []
+
+            while x < len(old_seq):
+                if x < len(old_seq) - 1 and old_seq[x:x+2] == top_pair:
+                    joined = "".join(old_seq[x:x+2])
+                    new_seq.append(joined)
+
+                    x += 2
+                else:
+                    new_seq.append(old_seq[x])
+                    x += 1
+            
+            new_seq = tuple(new_seq)
+            data[new_seq] = count
+            for i in range(len(new_seq) - 1):
+                p = (new_seq[i], new_seq[i+1])
+                seq_counter[p] += count 
+                inverted_idx[p].add(new_seq) 
+
+                heapq.heappush(heap, (-seq_counter[p], p))
+
+    return vocab, merges

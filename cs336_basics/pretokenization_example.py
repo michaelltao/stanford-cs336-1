@@ -1,8 +1,5 @@
 import os
-import regex as re
-import heapq
 from typing import BinaryIO
-from collections import Counter, defaultdict
 
 
 def find_chunk_boundaries(
@@ -51,83 +48,30 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
-def merge_dict(data: dict[tuple[str, ...], int], num_merges: int):
-    # pair -> []word mapping
-    inverted_idx = defaultdict(set)
-    
-    # pair -> count mapping
-    seq_counter = defaultdict(int)
-    for seq, count in data.items():
-        for i in range(len(seq) - 1):
-            pair = (seq[i], seq[i + 1])
-            seq_counter[pair] += count
-            inverted_idx[pair].add(seq)
 
-    # Build max-heap: (negative_count, pair)
-    heap = [(-cnt, pair) for pair, cnt in seq_counter.items()]
-    heapq.heapify(heap)
+# PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-    
-    for iter in range(num_merges):
-        while heap:
-            neg_cnt, top_pair = heapq.heappop(heap)
-            if seq_counter[top_pair] == -neg_cnt:
-                break
-        else: break
+# ## Usage
+# with open("data/TinyStoriesV2-GPT4-valid.txt", "rb") as f:
+#     num_processes = 4
 
-        affected_seqs = list(inverted_idx[top_pair])
+#     special_token = b"<|endoftext|>"
+#     boundaries = find_chunk_boundaries(f, num_processes, special_token)
 
-        for old_seq in affected_seqs:
-            print(old_seq)
-            count = data.pop(old_seq)
-            for i in range(len(old_seq) - 1):
-                p = (old_seq[i], old_seq[i+1])
-                print('p', p)
-                seq_counter[p] -= count
-                print(inverted_idx[p])
-                inverted_idx[p].remove(old_seq)
+#     # The following is a serial implementation, but you can parallelize this
+#     # by sending each start/end pair to a set of processes.
 
-            x = 0
-            new_seq = []
+#     final_toks = Counter()
+#     for start, end in zip(boundaries[:-1], boundaries[1:]):
+#         f.seek(start)
+#         chunk = f.read(end - start)
+#         split_texts = re.split(b"|".join([special_token]), chunk)
 
-            newidk = defaultdict(int)
-            while x < len(old_seq):
-                if x < len(old_seq) - 1 and old_seq[x:x+2] == top_pair:
-                    joined = ("".join(old_seq[x:x+2]))
-                    new_seq.append(joined)
-
-                    x += 2
-                else:
-                    new_seq.append(old_seq[x])
-                    x += 1
-            
-            new_seq = tuple(new_seq)
-            data[new_seq] = count
-            for i in range(len(new_seq) - 1):
-                p = (new_seq[i], new_seq[i+1])
-                seq_counter[p] -= count 
-                inverted_idx[p].add(new_seq) 
-
-                heapq.heappush(heap, (-seq_counter[p], p))
-        
-    return
+#         # Run pre-tokenization on your chunk and store the counts for each pre-token
+#         for split_bytes in split_texts:
+#             text = split_bytes.decode("utf-8", errors="ignore")
+#             pretokenized_text = re.findall(PAT, text)
+#             toks = [tuple(list(word)) for word in pretokenized_text]
+#             final_toks |= Counter(toks)
 
 
-PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-
-## Usage
-with open("data/TinyStoriesV2-GPT4-valid.txt", "rb") as f:
-    num_processes = 4
-    boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
-
-    # The following is a serial implementation, but you can parallelize this
-    # by sending each start/end pair to a set of processes.
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # Run pre-tokenization on your chunk and store the counts for each pre-token
-        pretokenized_text = re.findall(PAT, chunk)
-        text = [tuple(list(word)) for word in pretokenized_text]
-        counted = Counter(text)
-        merge_dict(counted, 1)
-        break
